@@ -1,1 +1,1 @@
-"# AzureMonitor-KQL" 
+# AzureMonitor-KQL
