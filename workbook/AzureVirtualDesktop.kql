@@ -1,0 +1,93 @@
+// 基礎
+let WVDConnections_CL = WVDConnections
+| where State == "Connected"
+| extend StartTime = TimeGenerated
+| join kind=inner (
+    WVDConnections  
+    | where State == "Completed"  
+    | extend EndTime=TimeGenerated
+) on CorrelationId  
+| extend Duration = EndTime - StartTime
+| project
+    TimeGenerated,
+    CorrelationId,
+    StartTime,
+    EndTime,
+    Duration,
+    ClientOS,
+    ClientSideIPAddress,
+    ClientType,
+    ClientVersion,
+    ConnectionType,
+    SessionHostAzureVmId,
+    SessionHostIPAddress,
+    SessionHostName,
+    TransportType,
+    Type,
+    UserName;
+
+// ユーザ別の使用時間ランキング（サインインの奴をまねる）
+WVDConnections_CL
+| extend rid = CorrelationId
+| extend prid = UserName
+| project prid, rid, UserName, StartTime, SessionHostAzureVmId, SessionHostName, Duration
+| union WVDConnections_CL (
+    | extend rid = UserName
+    | extend prid = ""
+    | summarize TotalTime = sum(Duration), Count = count() by prid, rid, UserName
+)
+| order by TotalTime, UserName
+
+
+// 1日当たりの利用ユーザ数、起動台数、利用時間
+(
+    WVDConnections_CL
+    | extend Name = "利用ユーザ数"
+    | summarize Count = dcount(UserName) by bin(TimeGenerated, 1d)
+)
+| union (
+    WVDConnections_CL
+    | extend Name = "AVD起動台数"
+    | summarize Count = dcount(SessionHostAzureVmId) by bin(TimeGenerated, 1d)
+)
+| union (
+    WVDConnections_CL
+    | extend Name = "AVD起動時間"
+    | summarize Count = sum(Duration) by bin(TimeGenerated, 1d)
+)
+
+// ClientOSの比率
+WVDConnections_CL
+| summarize Count = count() by ClientOS
+
+// ClientTypeの比率
+WVDConnections_CL
+| summarize Count = count() by ClientType
+
+// TransportTypeの比率
+WVDConnections_CL
+| summarize Count = count() by TransportType
+
+// アラートルール（３０分間隔で以下レコードを監視）
+WVDConnections 
+| project-away TenantId,SourceSystem  
+| summarize arg_max(TimeGenerated, *), StartTime = min(iff(State=='Started', TimeGenerated , datetime(null) )), ConnectTime = min(iff(State=='Connected', TimeGenerated , datetime(null) )) by CorrelationId  
+| join kind=leftouter 
+(
+    WVDErrors
+    |summarize Errors=make_list(pack('Code', Code, 'CodeSymbolic', CodeSymbolic, 'Time', TimeGenerated, 'Message', Message ,'ServiceError', ServiceError, 'Source', Source)) by CorrelationId  
+) on CorrelationId
+| join kind=leftouter 
+(
+    WVDCheckpoints
+    | summarize Checkpoints=make_list(pack('Time', TimeGenerated, 'Name', Name, 'Parameters', Parameters, 'Source', Source)) by CorrelationId  
+    | mv-apply Checkpoints on
+    (  
+        order by todatetime(Checkpoints['Time']) asc
+        | summarize Checkpoints=make_list(Checkpoints)
+    )
+) on CorrelationId  
+| project-away CorrelationId1, CorrelationId2  
+| where isnull(ConnectTime)
+| summarize Count = count() by UserName
+| where Count >= 5

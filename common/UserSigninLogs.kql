@@ -1,0 +1,33 @@
+SigninLogs
+| where Type != ExcludeTable
+| union kind=outer (
+    AADNonInteractiveUserSignInLogs
+    | where Type != ExcludeTable
+    | extend Agent = parse_json(Agent)
+    | extend ConditionalAccessPolicies = parse_json(ConditionalAccessPolicies)
+    | extend DeviceDetail = parse_json(DeviceDetail)
+    | extend LocationDetails = parse_json(LocationDetails)
+    | extend MfaDetail = parse_json(MfaDetail)
+    | extend Status = parse_json(Status)
+    | extend TokenProtectionStatusDetails = parse_json(TokenProtectionStatusDetails)
+)
+// 接続元ネットワークの判定
+| extend isOnPremises = iff(ipv4_is_in_range(IPAddress, "192.168.0.1/32"), true, false)
+| extend isAzureVNet = iff(ipv4_is_in_range(IPAddress, "192.168.0.2/32"), true, false)
+| extend isNetskope = iff(
+    ipv4_is_in_range(IPAddress, "192.168.0.3/32") or
+    ipv4_is_in_range(IPAddress, "192.168.0.4/32") or
+    ipv4_is_in_range(IPAddress, "192.168.0.5/32") or
+    ipv4_is_in_range(IPAddress, "192.168.0.6/32") or
+    ipv4_is_in_range(IPAddress, "192.168.0.7/32"),
+    true, false
+)
+// 拡張情報の設定
+| extend SigninId = UserId
+| extend SigninUserName = UserPrincipalName
+| extend SigninUserDisplayName = UserDisplayName
+| extend SigninDevice = iff(
+    DeviceDetail.DeviceName startswith "vm-daas-" and (isAzureVNet or isNetskope),
+    "AVD",
+    "Other"
+

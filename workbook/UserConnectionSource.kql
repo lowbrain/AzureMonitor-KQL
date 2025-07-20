@@ -1,0 +1,19 @@
+union UserSigninLogs, NonUserSigninLogs
+| where ResultType == "0"
+| extend SrcType = case(
+    isOnPremises, "オンプレ",
+    isAzureVNet, "Azure",
+    isNetskope, "Netskope",
+    "外部"
+)
+| extend SrcSubType = case(
+    isOnPremises, "Other",
+    isAzureVNet, SigninDevice,
+    isNetskope, SigninDevice,
+    isempty(ClientAppUsed), "管理アプリ",
+    ClientAppUsed
+)
+| extend Src = strcat(SrcType, "(", SrcSubType, ")")
+| summarize Count = count() by bin(TimeGenerated, 1d), Src
+| order by TimeGenerated
+

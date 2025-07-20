@@ -1,0 +1,49 @@
+let Detail = 
+    union UserSigninLogs, NonUserSigninLogs
+    | extend SigninType = strcat(Type, iff(Type == "SigninLogs", "(対話)", "(非対話)"))
+    | extend rid = strcat(SigninId, SigninType, ResultType)
+    | extend prid = SigninId
+    | summarize
+        Total = count(),
+        Success = countif(ResultType == "0"),
+        Failure = countif(ResultType != "0")
+        by
+            prid,
+            rid,
+            SigninId,
+            SigninUserName,
+            SigninUserDisplayName,
+            SigninType,
+            ResultType,
+            ResultDescription
+;
+
+Detail
+| union (
+    Detail
+    | extend rid = prid
+    | extend prid = ""
+    | summarize 
+        Total = sum(Total), 
+        Success = sum(Success), 
+        Failure = sum(Failure)
+        by 
+            prid, 
+            rid, 
+            SigninId, 
+            SigninUserName, 
+            SigninUserDisplayName
+)
+| project
+    prid,
+    rid,
+    SigninId,
+    SigninUserName,
+    SigninUserDisplayName,
+    Total,
+    Success,
+    Failure,
+    SigninType,
+    ResultType,
+    ResultDescription
+| order by Total

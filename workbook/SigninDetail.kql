@@ -1,0 +1,30 @@
+UserSigninLogs
+| where SigninId == "{SelectedSigninId}"
+| union (
+    NonUserSigninLogs
+    | where SigninId == "{SelectedSigninId}"
+)
+| extend SrcType = case(
+    isOnPremises, "オンプレ",
+    isAzureVNet, "Azure",
+    isNetskope, "Netskope",
+    "外部"
+)
+| extend SrcSubType = case(
+    isOnPremises, "Other",
+    isAzureVNet, SigninDevice,
+    isNetskope, SigninDevice,
+    isempty(ClientAppUsed), "管理アプリ",
+    ClientAppUsed
+)
+| extend Src = strcat(SrcType, "(", SrcSubType, ")")
+| project
+    TimeGenerated,
+    SigninUserName,
+    SigninUserDisplayName,
+    Src,
+    Type,
+    ResultType,
+    ResultDescription
+| order by TimeGenerated
+

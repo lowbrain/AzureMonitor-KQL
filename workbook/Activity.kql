@@ -1,0 +1,21 @@
+AzureActivity
+// Callerについて要確認
+// | where DaaSのリソースグループでVMの起動停止以外
+| summarize Count = count() by bin(TimeGenerated, 1d), Caller
+| order by TimeGenerated
+
+AuditLogs
+| extend UPN = tostring(InitiatedBy.user.userPrincipalName)
+| summarize Count = count() by bin(TimeGenerated, 1d), UPN
+| order by TimeGenerated
+
+MicrosoftGraphActivityLogs
+// UserIdとServicePrincipalIdについて要確認
+| summarize Count = count() by bin(TimeGenerated, 1d), UserId
+| order by TimeGenerated
+
+OfficeActivity
+// UserIdについて要確認
+| where UserId !endswith "@consto.com"
+| summarize Count = count() by bin(TimeGenerated, 1d), UserId
+| order by TimeGenerated
