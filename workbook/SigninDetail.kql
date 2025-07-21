@@ -1,5 +1,11 @@
+// 特定のサインインIDの詳細情報を表示するクエリです。
+// ユーザーおよび非ユーザーのサインインログから、選択されたサインインIDに合致するレコードを抽出し、
+// 接続元ネットワークの情報を付加して出力します。
+
 // ------------------------------------------------------------------
 // Step 1: 選択されたサインインIDのログを結合
+// UserSigninLogs と NonUserSigninLogs から、指定された SigninId に合致する
+// レコードを抽出し、SelectedSigninLogs として統合します。
 // ------------------------------------------------------------------
 let SelectedSigninLogs =
     union
@@ -10,6 +16,9 @@ let SelectedSigninLogs =
 
 // ------------------------------------------------------------------
 // Step 2: 接続元タイプとサブタイプを判定し、表示用に整形
+// 判定されたネットワークタイプ (isOnPremises, isAzureVNet, isNetskope) に基づいて、
+// 接続元の種類 (SrcType) とサブタイプ (SrcSubType) を定義します。
+// 最終的に Src 列として統合し、詳細情報を出力します。
 // ------------------------------------------------------------------
 SelectedSigninLogs
 | extend SrcType = case(
@@ -35,4 +44,3 @@ SelectedSigninLogs
     ResultType,
     ResultDescription
 | order by TimeGenerated
-

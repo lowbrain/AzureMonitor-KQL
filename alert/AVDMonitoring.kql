@@ -1,0 +1,50 @@
+// Azure Virtual Desktop (AVD) の接続監視アラートルールです。
+// 接続に失敗しているユーザーを検出し、アラートを発報することを目的としています。
+// このクエリは、通常、Log Analyticsのアラートルールとして30分間隔などで実行されることを想定しています。
+
+// ------------------------------------------------------------------
+// Step 1: WVDConnectionsログからセッションの開始・接続時刻を抽出
+// 各CorrelationId (セッションID) ごとに、セッションの開始時刻 (State='Started') と
+// 接続時刻 (State='Connected') を特定します。
+// ------------------------------------------------------------------
+WVDConnections 
+| project-away TenantId,SourceSystem  
+| summarize arg_max(TimeGenerated, *), StartTime = min(iff(State=='Started', TimeGenerated , datetime(null) )), ConnectTime = min(iff(State=='Connected', TimeGenerated , datetime(null) )) by CorrelationId  
+// ------------------------------------------------------------------
+// Step 2: エラーログとの結合
+// WVDErrors テーブルと CorrelationId で結合し、セッションに関連するエラー情報を取得します。
+// ------------------------------------------------------------------
+| join kind=leftouter 
+(
+    WVDErrors
+    |summarize Errors=make_list(pack('Code', Code, 'CodeSymbolic', CodeSymbolic, 'Time', TimeGenerated, 'Message', Message ,'ServiceError', ServiceError, 'Source', Source)) by CorrelationId  
+) on CorrelationId
+// ------------------------------------------------------------------
+// Step 3: チェックポイントログとの結合
+// WVDCheckpoints テーブルと CorrelationId で結合し、セッションのチェックポイント情報を取得します。
+// チェックポイントは時間順にソートされます。
+// ------------------------------------------------------------------
+| join kind=leftouter 
+(
+    WVDCheckpoints
+    | summarize Checkpoints=make_list(pack('Time', TimeGenerated, 'Name', Name, 'Parameters', Parameters, 'Source', Source)) by CorrelationId  
+    | mv-apply Checkpoints on
+    (  
+        order by todatetime(Checkpoints['Time']) asc
+        | summarize Checkpoints=make_list(Checkpoints)
+    )
+) on CorrelationId  
+// ------------------------------------------------------------------
+// Step 4: 不要な列の削除と接続失敗セッションのフィルタリング
+// 結合によって生成された重複するCorrelationId列を削除します。
+// ConnectTimeがnullのレコード (つまり、接続が成功しなかったセッション) をフィルタリングします。
+// ------------------------------------------------------------------
+| project-away CorrelationId1, CorrelationId2  
+| where isnull(ConnectTime)
+// ------------------------------------------------------------------
+// Step 5: 接続失敗が多いユーザーの特定
+// 接続に失敗したセッションをユーザー名 (UserName) ごとに集計し、
+// 失敗回数が5回以上のユーザーを特定します。
+// ------------------------------------------------------------------
+| summarize Count = count() by UserName
+| where Count >= 5

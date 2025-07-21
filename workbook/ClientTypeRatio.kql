@@ -1,0 +1,4 @@
+// Azure Virtual Desktop (AVD) セッションにおけるクライアントタイプの比率を算出するクエリです。
+// AVDUsageLogs を使用し、接続元のクライアントタイプごとのセッション数を集計します。
+AVDUsageLogs
+| summarize Count = count() by ClientType

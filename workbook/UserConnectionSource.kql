@@ -1,5 +1,24 @@
-union UserSigninLogs, NonUserSigninLogs
-| where ResultType == "0"
+// ユーザーのサインインログから、接続元の種類を日別に集計するクエリです。
+// 成功したサインインのみを対象とし、接続元を「オンプレ」「Azure」「Netskope」「外部」に分類します。
+
+// ------------------------------------------------------------------
+// Step 1: 成功したユーザーおよび非ユーザーサインインログを結合
+// ResultType が "0" (成功) の SigninLogs と NonUserSigninLogs を統合します。
+// ------------------------------------------------------------------
+let SuccessfulSignins =
+    union
+        UserSigninLogs
+        | where ResultType == "0",
+        NonUserSigninLogs
+        | where ResultType == "0";
+
+// ------------------------------------------------------------------
+// Step 2: 接続元タイプとサブタイプを判定し、表示用に整形
+// 判定されたネットワークタイプ (isOnPremises, isAzureVNet, isNetskope) に基づいて、
+// 接続元の種類 (SrcType) とサブタイプ (SrcSubType) を定義します。
+// 最終的に Src 列として統合し、日別に集計します。
+// ------------------------------------------------------------------
+SuccessfulSignins
 | extend SrcType = case(
     isOnPremises, "オンプレ",
     isAzureVNet, "Azure",
@@ -16,4 +35,3 @@ union UserSigninLogs, NonUserSigninLogs
 | extend Src = strcat(SrcType, "(", SrcSubType, ")")
 | summarize Count = count() by bin(TimeGenerated, 1d), Src
 | order by TimeGenerated
-

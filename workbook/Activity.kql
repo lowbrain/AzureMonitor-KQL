@@ -1,19 +1,44 @@
+// Azure AD、Microsoft Graph、Office 365 のアクティビティログを分析し、
+// 各種アクティビティの発生状況を日別に集計するクエリです。
+
+// ------------------------------------------------------------------
+// Step 1: Azure Activity Log の集計
+// Azure サブスクリプションレベルのアクティビティログ (AzureActivity) を日別に集計し、
+// Caller (操作を実行したユーザーまたはサービスプリンシパル) ごとのカウントを算出します。
+// ------------------------------------------------------------------
 AzureActivity
 // Callerについて要確認
 // | where DaaSのリソースグループでVMの起動停止以外
 | summarize Count = count() by bin(TimeGenerated, 1d), Caller
 | order by TimeGenerated
 
+// ------------------------------------------------------------------
+// Step 2: Azure AD Audit Log の集計
+// Azure Active Directory の監査ログ (AuditLogs) を日別に集計し、
+// UPN (User Principal Name) ごとのカウントを算出します。
+// ------------------------------------------------------------------
 AuditLogs
 | extend UPN = tostring(InitiatedBy.user.userPrincipalName)
 | summarize Count = count() by bin(TimeGenerated, 1d), UPN
 | order by TimeGenerated
 
+// ------------------------------------------------------------------
+// Step 3: Microsoft Graph Activity Log の集計
+// Microsoft Graph のアクティビティログ (MicrosoftGraphActivityLogs) を日別に集計し、
+// UserId ごとのカウントを算出します。
+// UserId と ServicePrincipalId のどちらを使用するかは、分析の目的に応じて検討が必要です。
+// ------------------------------------------------------------------
 MicrosoftGraphActivityLogs
 // UserIdとServicePrincipalIdについて要確認
 | summarize Count = count() by bin(TimeGenerated, 1d), UserId
 | order by TimeGenerated
 
+// ------------------------------------------------------------------
+// Step 4: Office 365 Activity Log の集計
+// Office 365 のアクティビティログ (OfficeActivity) を日別に集計し、
+// UserId ごとのカウントを算出します。
+// 特定のドメイン (@consto.com) のユーザーは除外しています。
+// ------------------------------------------------------------------
 OfficeActivity
 // UserIdについて要確認
 | where UserId !endswith "@consto.com"

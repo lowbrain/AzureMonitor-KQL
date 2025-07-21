@@ -1,12 +1,8 @@
-// This KQL snippet defines a set of IP address ranges.
-// To use this across your workspace, save this query as a function:
-// 1. Go to your Log Analytics workspace in the Azure portal.
-// 2. In the Logs query editor, paste the code below.
-// 3. Click "Save" -> "Save as function".
-// 4. Set the "Function name" to "IpAddressRanges".
-// 5. Click "Save".
+// このKQLは、IPアドレス範囲を定義する関数です。
+// Log Analyticsワークスペースに関数として登録することで、他のクエリから参照できます。
+// 関数名: IpAddressRanges
 //
-// The function returns a dynamic object that can be used in other queries.
+// この関数は、各カテゴリのIPアドレスリストを含む動的オブジェクトを返します。
 dynamic({
     "OnPremises": dynamic([
         "192.168.0.1/32"

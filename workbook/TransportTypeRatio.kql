@@ -1,0 +1,4 @@
+// Azure Virtual Desktop (AVD) セッションにおけるトランスポートタイプの比率を算出するクエリです。
+// AVDUsageLogs を使用し、セッションのトランスポートタイプごとのセッション数を集計します。
+AVDUsageLogs
+| summarize Count = count() by TransportType

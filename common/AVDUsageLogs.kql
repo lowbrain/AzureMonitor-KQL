@@ -1,0 +1,53 @@
+// AVDセッションの利用状況ログを生成するKQLクエリ
+// 各セッションの開始時刻、終了時刻、接続時間を算出します。
+// ------------------------------------------------------------------
+// Step 1: 接続開始ログを抽出
+// Stateが"Connected"のレコードを抽出し、TimeGeneratedをStartTimeとして定義します。
+// ------------------------------------------------------------------
+WVDConnections
+| where State == "Connected"
+| extend StartTime = TimeGenerated
+// ------------------------------------------------------------------
+// Step 2: 接続終了ログとの結合
+// 同じCorrelationIdを持つStateが"Completed"のレコードと左外部結合します。
+// 結合されたレコードのTimeGeneratedをEndTimeとして定義します。
+// ------------------------------------------------------------------
+| join kind=leftouter (
+    WVDConnections  
+    | where State == "Completed"  
+    | extend EndTime=TimeGenerated
+) on CorrelationId
+// ------------------------------------------------------------------
+// Step 3: 未終了セッションの終了時刻の推定
+// EndTimeがnullの場合、暫定的な終了時刻を推定します。
+// - セッション開始日が今日と同じなら、現在の時刻を暫定終了時刻とします。
+// - セッション開始日が今日より前なら、その日の終わりを暫定終了時刻とします。
+// ------------------------------------------------------------------
+| extend ProvisionalEndTime = iff(startofday(StartTime) == startofday(now()), now(), endofday(StartTime))
+| extend EndTime = iff(isnull(EndTime), ProvisionalEndTime, EndTime)
+// ------------------------------------------------------------------
+// Step 4: 接続時間の算出
+// EndTimeからStartTimeを引くことで、セッションのDuration (接続時間) を算出します。
+// ------------------------------------------------------------------
+| extend Duration = EndTime - StartTime
+// ------------------------------------------------------------------
+// Step 5: 必要な列の選択
+// 分析に必要な列を選択して出力します。
+// ------------------------------------------------------------------
+| project
+    TimeGenerated,
+    CorrelationId,
+    StartTime,
+    EndTime,
+    Duration,
+    ClientOS,
+    ClientSideIPAddress,
+    ClientType,
+    ClientVersion,
+    ConnectionType,
+    SessionHostAzureVmId,
+    SessionHostIPAddress,
+    SessionHostName,
+    TransportType,
+    Type,
+    UserName

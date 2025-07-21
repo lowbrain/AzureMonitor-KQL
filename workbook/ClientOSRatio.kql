@@ -1,0 +1,4 @@
+// Azure Virtual Desktop (AVD) セッションにおけるクライアントOSの比率を算出するクエリです。
+// AVDUsageLogs を使用し、接続元のクライアントOSごとのセッション数を集計します。
+AVDUsageLogs
+| summarize Count = count() by ClientOS

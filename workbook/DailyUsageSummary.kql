@@ -1,0 +1,18 @@
+// Azure Virtual Desktop (AVD) の1日当たりの利用状況サマリを算出するクエリです。
+// AVDUsageLogs を使用し、日ごとの利用ユーザー数、AVDホストの起動台数、
+// および総利用時間を集計します。
+(
+    AVDUsageLogs
+    | extend Name = "利用ユーザ数"
+    | summarize Count = dcount(UserName) by bin(TimeGenerated, 1d)
+)
+| union (
+    AVDUsageLogs
+    | extend Name = "AVD起動台数"
+    | summarize Count = dcount(SessionHostAzureVmId) by bin(TimeGenerated, 1d)
+)
+| union (
+    AVDUsageLogs
+    | extend Name = "AVD起動時間"
+    | summarize Count = sum(Duration) by bin(TimeGenerated, 1d)
+)

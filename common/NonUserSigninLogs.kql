@@ -1,15 +1,33 @@
+// Azure AD 非ユーザー (マネージドID、サービスプリンシパル) のサインインログを統合し、
+// 接続元ネットワークを判定、共通の形式で出力するクエリです。
+
+// ------------------------------------------------------------------
+// Step 1: マネージドIDとサービスプリンシパルのサインインログを統合
+// AADManagedIdentitySignInLogs と AADServicePrincipalSignInLogs を結合します。
+// 'Type != ExcludeTable' は、特定のログを除外するための条件ですが、
+// このクエリ単体では通常すべてのログが対象となります。
+// ------------------------------------------------------------------
 AADManagedIdentitySignInLogs
 | where Type != ExcludeTable
 | union kind=outer (
     AADServicePrincipalSignInLogs
     | where Type != ExcludeTable
 )
-// 接続元ネットワークの判定
+// ------------------------------------------------------------------
+// Step 2: 接続元ネットワークの判定
+// 外部定義されたIPアドレス範囲 (IpAddressRanges() 関数) を使用し、
+// サインイン元のIPアドレス (IPAddress) がどのネットワークに属するかを判定します。
+// ------------------------------------------------------------------
 | extend IpAddressRanges = IpAddressRanges()
 | extend isOnPremises = ipv4_is_in_any_range(IPAddress, IpAddressRanges.OnPremises)
 | extend isAzureVNet = ipv4_is_in_any_range(IPAddress, IpAddressRanges.AzureVNet)
 | extend isNetskope = ipv4_is_in_any_range(IPAddress, IpAddressRanges.Netskope)
-// 拡張情報の設定
+// ------------------------------------------------------------------
+// Step 3: 共通サインイン情報フィールドの拡張
+// UserSigninLogs とのデータ形式の整合性を保つため、
+// サービスプリンシパル/マネージドIDの情報を共通フィールドにマッピングします。
+// SigninDevice は非ユーザーサインインのため、一律 "Other" と設定します。
+// ------------------------------------------------------------------
 | extend SigninId = ServicePrincipalId
 | extend SigninUserName = ServicePrincipalName
 | extend SigninUserDisplayName = ServicePrincipalName

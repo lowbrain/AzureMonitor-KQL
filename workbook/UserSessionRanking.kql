@@ -1,0 +1,32 @@
+// Azure Virtual Desktop (AVD) セッションにおけるユーザー別の使用時間ランキングを算出するクエリです。
+// ブックの階層表示を想定し、ユーザーごとの集計と詳細を統合して表示します。
+
+// ------------------------------------------------------------------
+// Step 1: 詳細行の作成
+// AVDUsageLogs から各セッションの詳細情報を抽出し、
+// ブックの階層表示で使用する rid (行ID) と prid (親行ID) を設定します。
+// ------------------------------------------------------------------
+AVDUsageLogs
+| extend rid = CorrelationId // 詳細行のID
+| extend prid = UserName    // 親行（ユーザー）のID
+| project prid, rid, UserName, StartTime, SessionHostAzureVmId, SessionHostName, Duration
+// ------------------------------------------------------------------
+// Step 2: 集約行（親行）の作成と結合
+// AVDUsageLogs をユーザー単位で集計し、総利用時間とセッション数を算出します。
+// ブックの階層表示で親となる行として機能させるため、prid は空にし、
+// rid には親のID (UserName) を設定します。
+// Step 1で作成した詳細行と結合します。
+// ------------------------------------------------------------------
+| union (
+    AVDUsageLogs // AVDUsageLogs を使用
+    | extend rid = UserName // 親行のIDをridに設定
+    | extend prid = ""      // 親行のpridは空
+    | summarize TotalTime = sum(Duration), Count = count() by UserName
+    | extend SigninId = UserName // SigninSummary.kql との整合性のため
+    | project TotalTime, Count, UserName, rid, prid = ""
+)
+// ------------------------------------------------------------------
+// Step 3: 結果の並べ替え
+// 総利用時間の降順、次にユーザー名で並べ替えます。
+// ------------------------------------------------------------------
+| order by TotalTime desc, UserName

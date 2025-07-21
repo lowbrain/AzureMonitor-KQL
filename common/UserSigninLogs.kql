@@ -1,3 +1,13 @@
+// Azure AD ユーザーのサインインログを統合し、
+// 接続元ネットワークを判定、共通の形式で出力するクエリです。
+
+// ------------------------------------------------------------------
+// Step 1: 対話型と非対話型ユーザーサインインログを統合
+// SigninLogs (対話型) と AADNonInteractiveUserSignInLogs (非対話型) を結合します。
+// 非対話型ログのJSONフィールドをパースし、後続の処理で利用可能にします。
+// 'Type != ExcludeTable' は、特定のログを除外するための条件ですが、
+// このクエリ単体では通常すべてのログが対象となります。
+// ------------------------------------------------------------------
 SigninLogs
 | where Type != ExcludeTable
 | union kind=outer (
@@ -11,12 +21,21 @@ SigninLogs
     | extend Status = parse_json(Status)
     | extend TokenProtectionStatusDetails = parse_json(TokenProtectionStatusDetails)
 )
-// 接続元ネットワークの判定
+// ------------------------------------------------------------------
+// Step 2: 接続元ネットワークの判定
+// 外部定義されたIPアドレス範囲 (IpAddressRanges() 関数) を使用し、
+// サインイン元のIPアドレス (IPAddress) がどのネットワークに属するかを判定します。
+// ------------------------------------------------------------------
 | extend IpAddressRanges = IpAddressRanges()
-| extend isOnPremises = iff(ipv4_is_in_any_range(IPAddress, IpAddressRanges.OnPremises), true, false)
-| extend isAzureVNet = iff(ipv4_is_in_any_range(IPAddress, IpAddressRanges.AzureVNet), true, false)
-| extend isNetskope = iff(ipv4_is_in_any_range(IPAddress, IpAddressRanges.Netskope), true, false)
-// 拡張情報の設定
+| extend isOnPremises = ipv4_is_in_any_range(IPAddress, IpAddressRanges.OnPremises)
+| extend isAzureVNet = ipv4_is_in_any_range(IPAddress, IpAddressRanges.AzureVNet)
+| extend isNetskope = ipv4_is_in_any_range(IPAddress, IpAddressRanges.Netskope)
+// ------------------------------------------------------------------
+// Step 3: 共通サインイン情報フィールドの拡張
+// NonUserSigninLogs とのデータ形式の整合性を保つため、
+// ユーザーサインインログの情報を共通フィールドにマッピングします。
+// SigninDevice は、デバイス名と接続元ネットワークに基づいてAVDかどうかを判定します。
+// ------------------------------------------------------------------
 | extend SigninId = UserId
 | extend SigninUserName = UserPrincipalName
 | extend SigninUserDisplayName = UserDisplayName
@@ -24,4 +43,3 @@ SigninLogs
     DeviceDetail.DeviceName startswith "vm-daas-" and (isAzureVNet or isNetskope),
     "AVD",
     "Other")
-
