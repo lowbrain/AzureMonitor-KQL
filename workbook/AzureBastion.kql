@@ -1,0 +1,17 @@
+// Bastionセッションの開始・終了情報を取得
+let bastion_sessions = MicrosoftAzureBastionAuditLogs
+| summarize SessionStart=min(SessionStartTime), SessionEnd=max(SessionEndTime)
+    by TunnelId, UserName, UserEmail, TargetResourceId, TargetVMIPAddress;
+
+// Bastionセッション操作を実行したAzureユーザ（Caller）を取得
+let bastion_ops = AzureActivity
+| where ResourceProvider == "Microsoft.Network"
+    and ResourceType == "bastionHosts"
+    and OperationName contains "session"
+| project TunnelId=Properties_TunnelId, Caller, TimeGenerated;
+
+// Bastionセッション情報と操作ユーザを結合
+bastion_sessions
+| join kind=leftouter bastion_ops on TunnelId
+| project SessionStart, SessionEnd, TargetResourceId, TargetVMIPAddress, UserName, UserEmail, Caller, TimeGenerated
+| order by SessionStart desc
