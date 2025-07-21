@@ -5,16 +5,10 @@ AADManagedIdentitySignInLogs
     | where Type != ExcludeTable
 )
 // 接続元ネットワークの判定
-| extend isOnPremises = iff(ipv4_is_in_range(IPAddress, "192.168.0.1/32"), true, false)
-| extend isAzureVNet = iff(ipv4_is_in_range(IPAddress, "192.168.0.2/32"), true, false)
-| extend isNetskope = iff(
-    ipv4_is_in_range(IPAddress, "192.168.0.2/32") or
-    ipv4_is_in_range(IPAddress, "192.168.0.2/32") or
-    ipv4_is_in_range(IPAddress, "192.168.0.2/32") or
-    ipv4_is_in_range(IPAddress, "192.168.0.2/32") or
-    ipv4_is_in_range(IPAddress, "192.168.0.2/32"),
-    true, false
-)
+| extend IpAddressRanges = IpAddressRanges()
+| extend isOnPremises = ipv4_is_in_any_range(IPAddress, IpAddressRanges.OnPremises)
+| extend isAzureVNet = ipv4_is_in_any_range(IPAddress, IpAddressRanges.AzureVNet)
+| extend isNetskope = ipv4_is_in_any_range(IPAddress, IpAddressRanges.Netskope)
 // 拡張情報の設定
 | extend SigninId = ServicePrincipalId
 | extend SigninUserName = ServicePrincipalName

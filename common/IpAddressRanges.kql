@@ -1,0 +1,24 @@
+// This KQL snippet defines a set of IP address ranges.
+// To use this across your workspace, save this query as a function:
+// 1. Go to your Log Analytics workspace in the Azure portal.
+// 2. In the Logs query editor, paste the code below.
+// 3. Click "Save" -> "Save as function".
+// 4. Set the "Function name" to "IpAddressRanges".
+// 5. Click "Save".
+//
+// The function returns a dynamic object that can be used in other queries.
+dynamic({
+    "OnPremises": dynamic([
+        "192.168.0.1/32"
+    ]),
+    "AzureVNet": dynamic([
+        "192.168.0.2/32"
+    ]),
+    "Netskope": dynamic([
+        "192.168.0.3/32",
+        "192.168.0.4/32",
+        "192.168.0.5/32",
+        "192.168.0.6/32",
+        "192.168.0.7/32"
+    ])
+})
