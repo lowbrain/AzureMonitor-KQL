@@ -1,9 +1,17 @@
-UserSigninLogs
-| where SigninId == "{SelectedSigninId}"
-| union (
-    NonUserSigninLogs
-    | where SigninId == "{SelectedSigninId}"
-)
+// ------------------------------------------------------------------
+// Step 1: 選択されたサインインIDのログを結合
+// ------------------------------------------------------------------
+let SelectedSigninLogs =
+    union
+        UserSigninLogs
+        | where SigninId == "{SelectedSigninId}",
+        NonUserSigninLogs
+        | where SigninId == "{SelectedSigninId}";
+
+// ------------------------------------------------------------------
+// Step 2: 接続元タイプとサブタイプを判定し、表示用に整形
+// ------------------------------------------------------------------
+SelectedSigninLogs
 | extend SrcType = case(
     isOnPremises, "オンプレ",
     isAzureVNet, "Azure",

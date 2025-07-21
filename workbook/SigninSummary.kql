@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// Step 1: 詳細行の作成
+// サインインID、サインイン種別、結果種別ごとにログを集計する。
+// prid(親ID)とrid(行ID)はブックの階層表示で使用する。
+// ------------------------------------------------------------------
 let Detail = 
     union UserSigninLogs, NonUserSigninLogs
     | extend SigninType = strcat(Type, iff(Type == "SigninLogs", "(対話)", "(非対話)"))
@@ -15,11 +20,14 @@ let Detail =
             SigninUserDisplayName,
             SigninType,
             ResultType,
-            ResultDescription
-;
+            ResultDescription;
 
-Detail
-| union (
+// ------------------------------------------------------------------
+// Step 2: 集約行（親行）の作成
+// 詳細行のデータをユーザー単位（SigninId単位）で集計しなおす。
+// 階層表示の親とするため、pridは空にし、ridを親のIDとする。
+// ------------------------------------------------------------------
+let Summary =
     Detail
     | extend rid = prid
     | extend prid = ""
@@ -32,8 +40,12 @@ Detail
             rid, 
             SigninId, 
             SigninUserName, 
-            SigninUserDisplayName
-)
+            SigninUserDisplayName;
+
+// ------------------------------------------------------------------
+// Step 3: 集約行と詳細行を結合して最終結果を作成
+// ------------------------------------------------------------------
+union Summary, Detail
 | project
     prid,
     rid,
