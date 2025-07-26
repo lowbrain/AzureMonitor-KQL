@@ -1,68 +1,88 @@
-// ユーザーのサインイン活動を要約し、ブックの階層表示に適した形式で出力するクエリです。
-// 各サインインの詳細と、ユーザーごとの集計を統合して表示します。
+// サインインログを集計し、ユーザーごとのサインイン状況を把握するためのクエリです。
+// 対話型および非対話型のサインインログを統合し、ユーザーごとに集計します。
+// Azure Workbook での可視化を想定し、親子関係を持つグリッド形式で出力します。
 
 // ------------------------------------------------------------------
-// Step 1: 詳細行の作成
-// UserSigninLogs と NonUserSigninLogs を結合し、サインインID、サインイン種別、
-// 結果種別ごとにログを集計します。prid (親ID) と rid (行ID) は、
-// ブックの階層表示で詳細を展開するために使用されます。
+// Step 1: 必要な列のみを抽出したサインインログの定義
+// UserSigninLogs と NonUserSigninLogs を結合し、後続の処理で利用する列のみを抽出します。
+// これにより、クエリのパフォーマンスを向上させます。
 // ------------------------------------------------------------------
-let Detail = 
-    union UserSigninLogs, NonUserSigninLogs
-    | extend SigninType = strcat(Type, iff(Type == "SigninLogs", "(対話)", "(非対話)"))
-    | extend rid = strcat(SigninId, SigninType, ResultType)
-    | extend prid = SigninId
-    | summarize
-        Total = count(),
-        Success = countif(ResultType == "0"),
-        Failure = countif(ResultType != "0")
-        by
-            prid,
-            rid,
-            SigninId,
-            SigninUserName,
-            SigninUserDisplayName,
-            SigninType,
-            ResultType,
-            ResultDescription;
+let WorkTable = union UserSigninLogs, NonUserSigninLogs
+| project
+    Type,
+    SigninId,
+    SigninUserName,
+    SigninUserDisplayName,
+    ResultType,
+    ResultDescription;
 
 // ------------------------------------------------------------------
-// Step 2: 集約行（親行）の作成
-// Step 1で作成した詳細行のデータを、ユーザー単位 (SigninId単位) で再集計します。
-// ブックの階層表示で親となる行として機能させるため、prid は空にし、
-// rid には親のID (SigninId) を設定します。
+// Step 2: サインインごとの集計 (親行の作成)
+// サインインID (SigninId) を基準に、サインインの合計数、成功数、失敗数を集計します。
+// この結果が、Workbook 上で親行として表示されます。
 // ------------------------------------------------------------------
-let Summary =
-    Detail
-    | extend rid = prid
-    | extend prid = ""
-    | summarize 
-        Total = sum(Total), 
-        Success = sum(Success), 
-        Failure = sum(Failure)
-        by 
-            prid, 
-            rid, 
-            SigninId, 
-            SigninUserName, 
-            SigninUserDisplayName;
+let Summary = WorkTable
+| extend rid = SigninId
+| extend prid = ""
+| summarize
+    Total = count(),
+    Success = countif(ResultType == "0"),
+    Failure = countif(ResultType != "0")
+    by
+    prid,
+    rid,
+    SigninId,
+    SigninUserName,
+    SigninUserDisplayName
+| extend SortNo = Total;
 
 // ------------------------------------------------------------------
-// Step 3: 集約行と詳細行を結合して最終結果を作成
-// Step 2で作成した集約行と、Step 1で作成した詳細行を結合し、
-// ブックで表示するための最終的な列を選択して出力します。
+// Step 3: サインインごとの詳細な内訳 (子行の作成)
+// 親行に紐づく形で、サインインのタイプ (対話型/非対話型) や結果ごとの詳細な情報を集計します。
+// この結果が、Workbook 上で子行として表示されます。
+// ------------------------------------------------------------------
+let Detail = WorkTable
+| extend SigninType = iff(Type == "SigninLogs", "対話型", "非対話型")
+| extend rid = strcat(SigninId, SigninType, ResultType)
+| extend prid = SigninId
+| summarize
+    Total = count(),
+    Success = countif(ResultType == "0"),
+    Failure = countif(ResultType != "0")
+    by
+    prid,
+    rid,
+    SigninId,
+    SigninUserName,
+    SigninUserDisplayName,
+    Type,
+    SigninType,
+    ResultType,
+    ResultDescription
+| join kind=inner (
+    // 親行のソートキーを付与
+    Summary
+    | project rid, SortNo 
+) on $left.prid == $right.rid;
+
+// ------------------------------------------------------------------
+// Step 4: 親行と子行を結合して最終結果を出力
+// 親行と子行を結合し、Workbook で表示するための最終的な結果セットを作成します。
+// 親行の合計サインイン数で降順にソートし、同じサインインID内では親行が先頭に表示されるようにします。
 // ------------------------------------------------------------------
 union Summary, Detail
 | project
     prid,
     rid,
+    SortNo,
     SigninId,
     SigninUserName,
     SigninUserDisplayName,
     Total,
     Success,
     Failure,
+    Type,
     SigninType,
     ResultType,
     ResultDescription
-| order by Total
+| order by SortNo, SigninId, Total
