@@ -1,0 +1,101 @@
+// 外部からのインバウンドフローを処理します。
+// 外部関連のフローを抽出し、「インバウンド」の観点からフロータイプを分類し、
+// メトリクス（Bytes, Packetsなど）を正規化した後、不要な列を削除します。
+let ExternalInbound = NTANetAnalytics
+    | where FlowType in ('AzurePublic', 'ExternalPublic', 'MaliciousFlow', 'P2S', 'S2S', 'Unknown')
+    | extend 
+        VNetFlowType = case(
+            FlowType in ('AzurePublic', 'ExternalPublic', 'MaliciousFlow', 'P2S'), 'Internet(In)',
+            FlowType == 'S2S' or (FlowType == 'Unknown' and ipv4_is_private(SrcIp) and ipv4_is_private(DestIp)), 'On-premise(In)',
+            'Internet(In)'
+        )
+    | extend
+        VNetFlowDirection = case(
+            FlowType == 'Unknown' and VNetFlowType == 'Internet(In)', iff(ipv4_is_private(DestIp), 'Inbound', 'Outbound'),
+            FlowType == 'Unknown' and VNetFlowType == 'On-premise(In)', iff(ipv4_is_in_any_range(DestIp, '10.4.0.0/16'), 'Inbound', 'Outbound'),
+            FlowDirection
+        )
+    | extend
+        DirectionAlt = iff(VNetFlowDirection == 'Inbound', 'SrcToDest', 'DestToSrc'),
+        Bytes = iff(VNetFlowDirection == 'Inbound', BytesSrcToDest, BytesDestToSrc),
+        Packets = iff(VNetFlowDirection == 'Inbound', PacketsSrcToDest, PacketsDestToSrc),
+        AllowedFlows = AllowedInFlows,
+        DeniedFlows = DeniedInFlows
+    | project-away
+        FlowDirection,
+        BytesSrcToDest,
+        BytesDestToSrc,
+        PacketsSrcToDest,
+        PacketsDestToSrc,
+        AllowedInFlows,
+        AllowedOutFlows,
+        DeniedInFlows,
+        DeniedOutFlows;
+
+// 外部へのアウトバウンドフローを処理します。
+// 同じ外部関連フローを「アウトバウンド」の観点から再処理し、フロータイプを分類、
+// メトリクスを正規化した後、不要な列を削除します。
+let ExternalOutbound = NTANetAnalytics
+    | where FlowType in ('AzurePublic', 'ExternalPublic', 'MaliciousFlow', 'P2S', 'S2S', 'Unknown')
+    | extend 
+        VNetFlowType = case(
+            FlowType in ('AzurePublic', 'ExternalPublic', 'MaliciousFlow', 'P2S'), 'Internet(Out)',
+            FlowType == 'S2S' or (FlowType == 'Unknown' and ipv4_is_private(SrcIp) and ipv4_is_private(DestIp)), 'On-premise(Out)',
+            'Internet(Out)'
+        )
+    | extend
+        VNetFlowDirection = case(
+            FlowType == 'Unknown' and VNetFlowType == 'Internet(Out)', iff(ipv4_is_private(DestIp), 'Inbound', 'Outbound'),
+            FlowType == 'Unknown' and VNetFlowType == 'On-premise(Out)', iff(ipv4_is_in_any_range(DestIp, '10.4.0.0/16'), 'Inbound', 'Outbound'),
+            FlowDirection
+        )
+    | extend
+        DirectionAlt = iff(VNetFlowDirection == 'Outbound', 'DestToSrc', 'SrcToDest'),
+        Bytes = iff(VNetFlowDirection == 'Outbound', BytesSrcToDest, BytesDestToSrc),
+        Packets = iff(VNetFlowDirection == 'Outbound', PacketsSrcToDest, PacketsDestToSrc),
+        AllowedFlows = AllowedOutFlows,
+        DeniedFlows = DeniedOutFlows
+    | project-away
+        FlowDirection,
+        BytesSrcToDest,
+        BytesDestToSrc,
+        PacketsSrcToDest,
+        PacketsDestToSrc,
+        AllowedInFlows,
+        AllowedOutFlows,
+        DeniedInFlows,
+        DeniedOutFlows;
+
+// VNet内およびVNet間の内部フローを処理します。
+// 内部関連のフローを抽出し、送受信のメトリクスを合算して正規化します。
+let Internal = NTANetAnalytics
+    | where FlowType in ('IntraVNet', 'InterVNet', 'UnknownPrivate')
+    | extend VNetFlowType = 'Internal(In/Out)'
+    | extend VNetFlowDirection = ''
+    | extend
+        DirectionAlt = '',
+        Bytes = BytesSrcToDest + BytesDestToSrc,
+        Packets = PacketsSrcToDest + PacketsDestToSrc,
+        AllowedFlows = AllowedInFlows + AllowedOutFlows,
+        DeniedFlows = DeniedInFlows + DeniedOutFlows
+    | project-away
+        FlowDirection,
+        BytesSrcToDest,
+        BytesDestToSrc,
+        PacketsSrcToDest,
+        PacketsDestToSrc,
+        AllowedInFlows,
+        AllowedOutFlows,
+        DeniedInFlows,
+        DeniedOutFlows;
+
+// 上記で作成した3つのデータセット（インバウンド、アウトバウンド、内部）を統合します。
+let VNetFlowLogs = union ExternalInbound, ExternalOutbound, Internal;
+
+// キャッシュされたVNetFlowLogsを元に、VNetFlowTypeごとのデータ量(Bytes)の時系列トレンドと総量を計算します。
+VNetFlowLogs
+| make-series Trend = sum(Bytes) default=0 on TimeGenerated from ago(30d) to now() step 1d by VNetFlowType
+| join kind=leftouter (
+    VNetFlowLogs
+    | summarize TotalVolume = sum(Bytes) by VNetFlowType
+) on VNetFlowType
