@@ -1,101 +1,175 @@
-// 外部からのインバウンドフローを処理します。
-// 外部関連のフローを抽出し、「インバウンド」の観点からフロータイプを分類し、
-// メトリクス（Bytes, Packetsなど）を正規化した後、不要な列を削除します。
-let ExternalInbound = NTANetAnalytics
-    | where FlowType in ('AzurePublic', 'ExternalPublic', 'MaliciousFlow', 'P2S', 'S2S', 'Unknown')
-    | extend 
+//
+// VmDetails: VM関連IPアドレスの最新情報を集約
+// 目的:
+// ネットワークフローログから、VMに関連するIPアドレスの最新のメタデータ
+// (VM名, サブネット, NIC等)を日次で集約したテーブルを作成します。
+// このテーブルは、後続の処理で不明なフローの情報を補完するために利用されます。
+// 処理概要:
+// 1. 送信元/先にVM情報が含まれるフローを抽出します。
+// 2. 1つのフローレコードから「送信元」と「送信先」の情報をそれぞれ文字列として結合し、mv-expandで2つのレコードに展開します。
+// 3. 各レコードからIP, VM名, サブネット等の情報をパースします。
+// 4. 日付とIPアドレスの組み合わせごとに、最も新しいレコードのVM関連情報を取得します。
+//
+let VmDetails = NTANetAnalytics
+    | where isnotempty(SrcVm) or isnotempty(DestVm)
+    | mv-expand PeerProps = split(
+        strcat(
+            SrcIp,  '|', SrcVm,  '|', SrcSubnet,  '|', SrcNic,  '|', SrcRegion,  '|', SrcSubscription,
+            ' ',
+            DestIp, '|', DestVm, '|', DestSubnet, '|', DestNic, '|', DestRegion, '|', DestSubscription),
+        ' ')
+    | extend Props = split(PeerProps, '|'), Date = bin(TimeGenerated, 1d)
+    | extend Ip = tostring(Props[0]), Vm = Props[1], Subnet = Props[2], Nic = Props[3], Region = Props[4], Subscription = Props[5]
+    | where isnotempty(Vm)
+    | summarize arg_max(TimeGenerated, Vm, Subnet, Nic, Region, Subscription) by Date, Ip;
+// 
+// NormalizedUnknownData: 不明フローの情報を正規化
+// 目的:
+// FlowTypeが'Unknown'または'UnknownPrivate'のフローに対し、先に作成した`VmDetails`テーブルを
+// 参照して送信元・送信先のVM情報を補完(正規化)します。
+// さらに、IPアドレスの範囲に基づいてフローの方向(インターネット送受信/内部通信)を判定します。
+// 処理概要:
+// 1. FlowTypeが'Unknown'または'UnknownPrivate'のレコードを抽出します。
+// 2. SrcIpをキーに`VmDetails`と結合し、送信元VM情報が空の場合に補完します。
+// 3. DestIpをキーに`VmDetails`と結合し、送信先VM情報が空の場合に補完します。
+// 4. IPアドレスが特定のVNet範囲(ここでは '10.0.0.1/16')内にあるかどうかに基づき、フローの方向を示す列を追加します。
+//
+let NormalizedUnknownData = NTANetAnalytics
+    | where FlowType in('Unknown', 'UnknownPrivate')
+    | extend Date = bin(TimeGenerated, 1d)
+    | join kind = leftouter VmDetails on $left.Date == $right.Date and $left.SrcIp == $right.Ip
+    | extend
+        SrcVm = iff(isempty(SrcVm), Vm, SrcVm),
+        SrcSubnet = iff(isempty(SrcVm), Subnet, SrcSubnet),
+        SrcNic = iff(isempty(SrcVm), Nic, SrcNic),
+        SrcRegion = iff(isempty(SrcVm), Region, SrcRegion),
+        SrcSubscription = iff(isempty(SrcVm), Subscription, SrcSubscription)
+    | project-away TimeGenerated1, Date1, Ip, Vm, Subnet, Nic, Region, Subscription
+    | join kind = leftouter VmDetails on $left.Date == $right.Date and $left.DestIp == $right.Ip
+    | extend
+        DestVm = iff(isempty(DestVm), Vm, DestVm),
+        DestSubnet = iff(isempty(DestVm), Subnet, DestSubnet),
+        DestNic = iff(isempty(DestVm), Nic, DestNic),
+        DestRegion = iff(isempty(DestVm), Region, DestRegion),
+        DestSubscription = iff(isempty(DestVm), Subscription, DestSubscription)
+    | project-away TimeGenerated1, Date1, Ip, Vm, Subnet, Nic, Region, Subscription
+    | extend
         VNetFlowType = case(
-            FlowType in ('AzurePublic', 'ExternalPublic', 'MaliciousFlow', 'P2S'), 'Internet(In)',
-            FlowType == 'S2S' or (FlowType == 'Unknown' and ipv4_is_private(SrcIp) and ipv4_is_private(DestIp)), 'On-premise(In)',
-            'Internet(In)'
-        )
+            ipv4_is_in_range(SrcIp, '10.0.0.1/16') and ipv4_is_in_range(DestIp, '10.0.0.1/16'), 'Internal',
+            ipv4_is_in_range(SrcIp, '10.0.0.1/16') and not(ipv4_is_private(DestIp)), 'Internet',
+            not(ipv4_is_private(SrcIp)) and ipv4_is_in_range(DestIp, '10.0.0.1/16'), 'Internet',
+            'On-premise'),
+        FlowDirection = case(
+            ipv4_is_in_range(SrcIp, '10.0.0.1/16') and not(ipv4_is_in_range(DestIp, '10.0.0.1/16')), 'Outbound',
+            not(ipv4_is_in_range(SrcIp, '10.0.0.1/16')) and ipv4_is_in_range(DestIp, '10.0.0.1/16'), 'Inbound',
+            FlowDirection);
+//
+// NormalizedPublicData: パブリックIPフローの正規化
+// 目的:
+// FlowTypeが'AzurePublic'または'ExternalPublic'のフローを正規化します。
+// これらのフローでは、複数のパブリックIPとの通信が一つのレコードに集約されているため、
+// それを展開して個別のパブリックIPごとのフローレコードを生成します。
+// 処理概要:
+// 1. FlowTypeが'AzurePublic'または'ExternalPublic'のレコードを抽出します。
+// 2. フローの方向(Inbound/Outbound)に応じて、集約列(SrcPublicIps/DestPublicIps)を選択します。
+// 3. mv-expandを使い、スペース区切りで集約されているパブリックIPごとの情報を個別のレコードに展開します。
+// 4. 各レコードからIPアドレスと各種統計情報(許可フロー数、完了フロー数、パケット数、バイト数)をパースします。
+// 5. パースした情報でSrcIp/DestIpや各種統計情報を更新・設定します。
+//
+let NormalizedPublicData = NTANetAnalytics
+    | where FlowType in('AzurePublic', 'ExternalPublic')
+    | mv-expand IpProps = split(iif(FlowDirection == 'Inbound', SrcPublicIps, DestPublicIps), ' ')
+    | extend Props = split(IpProps, '|')
     | extend
-        VNetFlowDirection = case(
-            FlowType == 'Unknown' and VNetFlowType == 'Internet(In)', iff(ipv4_is_private(DestIp), 'Inbound', 'Outbound'),
-            FlowType == 'Unknown' and VNetFlowType == 'On-premise(In)', iff(ipv4_is_in_any_range(DestIp, '10.4.0.0/16'), 'Inbound', 'Outbound'),
-            FlowDirection
-        )
-    | extend
-        DirectionAlt = iff(VNetFlowDirection == 'Inbound', 'SrcToDest', 'DestToSrc'),
-        Bytes = iff(VNetFlowDirection == 'Inbound', BytesSrcToDest, BytesDestToSrc),
-        Packets = iff(VNetFlowDirection == 'Inbound', PacketsSrcToDest, PacketsDestToSrc),
-        AllowedFlows = AllowedInFlows,
-        DeniedFlows = DeniedInFlows
-    | project-away
-        FlowDirection,
-        BytesSrcToDest,
-        BytesDestToSrc,
-        PacketsSrcToDest,
-        PacketsDestToSrc,
-        AllowedInFlows,
-        AllowedOutFlows,
-        DeniedInFlows,
-        DeniedOutFlows;
-
-// 外部へのアウトバウンドフローを処理します。
-// 同じ外部関連フローを「アウトバウンド」の観点から再処理し、フロータイプを分類、
-// メトリクスを正規化した後、不要な列を削除します。
-let ExternalOutbound = NTANetAnalytics
-    | where FlowType in ('AzurePublic', 'ExternalPublic', 'MaliciousFlow', 'P2S', 'S2S', 'Unknown')
-    | extend 
-        VNetFlowType = case(
-            FlowType in ('AzurePublic', 'ExternalPublic', 'MaliciousFlow', 'P2S'), 'Internet(Out)',
-            FlowType == 'S2S' or (FlowType == 'Unknown' and ipv4_is_private(SrcIp) and ipv4_is_private(DestIp)), 'On-premise(Out)',
-            'Internet(Out)'
-        )
-    | extend
-        VNetFlowDirection = case(
-            FlowType == 'Unknown' and VNetFlowType == 'Internet(Out)', iff(ipv4_is_private(DestIp), 'Inbound', 'Outbound'),
-            FlowType == 'Unknown' and VNetFlowType == 'On-premise(Out)', iff(ipv4_is_in_any_range(DestIp, '10.4.0.0/16'), 'Inbound', 'Outbound'),
-            FlowDirection
-        )
-    | extend
-        DirectionAlt = iff(VNetFlowDirection == 'Outbound', 'DestToSrc', 'SrcToDest'),
-        Bytes = iff(VNetFlowDirection == 'Outbound', BytesSrcToDest, BytesDestToSrc),
-        Packets = iff(VNetFlowDirection == 'Outbound', PacketsSrcToDest, PacketsDestToSrc),
-        AllowedFlows = AllowedOutFlows,
-        DeniedFlows = DeniedOutFlows
-    | project-away
-        FlowDirection,
-        BytesSrcToDest,
-        BytesDestToSrc,
-        PacketsSrcToDest,
-        PacketsDestToSrc,
-        AllowedInFlows,
-        AllowedOutFlows,
-        DeniedInFlows,
-        DeniedOutFlows;
-
-// VNet内およびVNet間の内部フローを処理します。
-// 内部関連のフローを抽出し、送受信のメトリクスを合算して正規化します。
-let Internal = NTANetAnalytics
-    | where FlowType in ('IntraVNet', 'InterVNet', 'UnknownPrivate')
-    | extend VNetFlowType = 'Internal(In/Out)'
-    | extend VNetFlowDirection = ''
-    | extend
-        DirectionAlt = '',
-        Bytes = BytesSrcToDest + BytesDestToSrc,
-        Packets = PacketsSrcToDest + PacketsDestToSrc,
-        AllowedFlows = AllowedInFlows + AllowedOutFlows,
-        DeniedFlows = DeniedInFlows + DeniedOutFlows
-    | project-away
-        FlowDirection,
-        BytesSrcToDest,
-        BytesDestToSrc,
-        PacketsSrcToDest,
-        PacketsDestToSrc,
-        AllowedInFlows,
-        AllowedOutFlows,
-        DeniedInFlows,
-        DeniedOutFlows;
-
-// 上記で作成した3つのデータセット（インバウンド、アウトバウンド、内部）を統合します。
-let VNetFlowLogs = union ExternalInbound, ExternalOutbound, Internal;
-
-// キャッシュされたVNetFlowLogsを元に、VNetFlowTypeごとのデータ量(Bytes)の時系列トレンドと総量を計算します。
-VNetFlowLogs
-| make-series Trend = sum(Bytes) default=0 on TimeGenerated from ago(30d) to now() step 1d by VNetFlowType
-| join kind=leftouter (
-    VNetFlowLogs
-    | summarize TotalVolume = sum(Bytes) by VNetFlowType
-) on VNetFlowType
+        VNetFlowType = 'Internet',
+        SrcIp = iif(FlowDirection == 'Inbound', tostring(Props[0]), SrcIp),
+        DestIp = iif(FlowDirection == 'Outbound', tostring(Props[0]), DestIp),
+        AllowedInFlows = iif(FlowDirection == 'Inbound', tolong(Props[1]), 0),
+        AllowedOutFlows = iif(FlowDirection == 'Outbound', tolong(Props[1]), 0),
+        CompletedFlows = tolong(IpProps[2]),
+        PacketsSrcToDest = tolong(IpProps[3]),
+        PacketsDestToSrc = tolong(IpProps[4]),
+        BytesSrcToDest = tolong(IpProps[5]),
+        BytesDestToSrc = tolong(IpProps[6])
+    | project-away IpProps, Props;
+// 
+// NormalizedEtcData: その他のフロータイプの分類
+// 目的:
+// 'IntraVNet', 'InterVNet', 'S2S', 'P2S', 'MaliciousFlow' といった、
+// ここまでの処理でカバーされていない残りのフロータイプを分類します。
+// 処理概要:
+// 1. 対象となるFlowTypeを持つレコードを抽出します。
+// 2. FlowTypeに基づき、より汎用的な分類('On-premise'または'Internal')を行う
+//    VNetFlowType列を追加します。
+//
+let NormalizedEtcData = NTANetAnalytics
+| where FlowType in('IntraVNet', 'InterVNet', 'S2S', 'P2S', 'MaliciousFlow')
+| extend VNetFlowType = case(
+    FlowType in('S2S'), 'On-premise',
+    FlowType in('P2S', 'MaliciousFlow'), 'Internet',
+    'Internal');
+//
+// 最終的なデータの結合と整形
+// 目的:
+// これまで準備した3つのデータセットを統合し、最終的な出力形式に整形します。
+// 1つの双方向フローレコードを、VNet/VMを中心とした「受信(In)」と「送信(Out)」の
+// 2つの単方向レコードに変換することで、各リソースのトラフィック量を正確に把握できるようにします。
+// (内部通信の場合は「In/Out」の1レコードとして扱います)
+// 処理概要:
+// 1. `NormalizedUnknownData`, `NormalizedPublicData`, `NormalizedEtcData` の3つのテーブルを結合します。
+// 2. フローの方向性に基づき、"In" と "Out" の情報を格納する文字列を生成します。
+//    - 内部通信(Internal)の場合、これらは空文字列になります。
+// 3. `mv-expand` を使い、1つのレコードを「In」と「Out」の2つのレコードに展開します。
+//    - 内部通信の場合は「In/Out」の1レコードにまとめられます。
+//    - これにより、例えば `FlowDirection: Inbound` のインターネットからのフローは、
+//      VNet/VM視点での「In (受信)」レコードと、対向IP視点での「Out (送信)」レコードに分割されます。
+// 4. 展開された各レコードから、方向(Direction)、パケット数、バイト数などの情報をパースします。
+// 5. VNet/VMのサブスクリプションIDやリソースグループ名などを抽出し、完全なリソースIDを組み立てます。
+// 6. `project` を使用して、最終的に必要な列を選択し、名前を付けて出力します。
+union NormalizedUnknownData, NormalizedPublicData, NormalizedEtcData
+| extend
+    In = case(
+        VNetFlowType == 'Internal', '',
+        FlowDirection == 'Inbound', strcat('In', '|', PacketsSrcToDest, '|', BytesSrcToDest, '|', true),
+        strcat('In', '|', PacketsDestToSrc, '|', BytesDestToSrc, '|', false)),
+    Out = case(
+        VNetFlowType == 'Internal', '',
+        FlowDirection == 'Inbound', strcat('Out', '|', PacketsDestToSrc, '|', BytesDestToSrc, '|', false),
+        strcat('Out', '|', PacketsSrcToDest, '|', BytesSrcToDest, '|', true)),
+    InOut = strcat('In/Out', '|', PacketsSrcToDest + PacketsDestToSrc, '|', BytesSrcToDest + BytesDestToSrc, '|', true)
+| mv-expand Pair= iff(isempty(In) and isempty(Out), pack_array(InOut), pack_array(In, Out))
+| extend Props = split(Pair, '|')
+| extend
+    Direction = Props[0],
+    Packets = tolong(Props[1]),
+    Bytes = tolong(Props[2]),
+    isFlow = tobool(Props[3]),
+    Subscription = iif(FlowDirection == 'Inbound', DestSubscription, SrcSubscription),
+    SubnetSplit = split(iif(FlowDirection == 'Inbound', DestSubnet, SrcSubnet), '/'),
+    VmSplit = split(iif(FlowDirection == 'Inbound', DestVm, SrcVm), '/')
+| project
+    TimeGenerated,
+    VNetFlowType,
+    VNetFlowTypeName = strcat(VNetFlowType, '(', Direction, ')'),
+    FlowStartTime,
+    FlowEndTime,
+    FlowDirection,
+    FlowStatus,
+    FlowType,
+    CompletedFlows = iff(isFlow, CompletedFlows, 0),
+    L4Protocol,
+    L7Protocol,
+    IP = iff(FlowDirection == 'Inbound', DestIp, SrcIp),
+    Port = iff(FlowDirection == 'Inbound', tostring(DestPort), SrcPorts),
+    VNet = strcat('/subscriptions/', Subscription, '/resourceGroups/', SubnetSplit[0], 'providers/Microsoft.Network/virtualNetworks/', SubnetSplit[1]),
+    Subnet = iff(array_length(SubnetSplit) > 2, strcat(SubnetSplit[1], '/', SubnetSplit[2]), SubnetSplit[1]),
+    VM = strcat('/subscriptions/', Subscription, '/resourceGroups/', VmSplit[0], 'providers/Microsoft.Compute/virtualMachines/', VmSplit[1]),
+    PeerIP = iif(FlowDirection == 'Inbound', SrcIp, DestIp),
+    PeerPort = iif(FlowDirection == 'Inbound', SrcPorts, tostring(DestPort)),
+    AllowedInFlows = iif(isFlow, AllowedInFlows, 0),
+    AllowedOutFlows = iif(isFlow, AllowedOutFlows, 0),
+    DeniedInFlows = iif(isFlow, DeniedInFlows, 0),
+    DeniedOutFlows = iif(isFlow, DeniedOutFlows, 0),
+    Direction = Props[0],
+    Packets = Props[1],
+    Bytes = Props[2]
